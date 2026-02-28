@@ -10,12 +10,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout the repository
-      - name: Checkout repo
+      # 1️⃣ Checkout the repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Python 3.11
-      - name: Set up Python
+      # 2️⃣ Setup Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
@@ -26,11 +26,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 pandas
 
-      # 4️⃣ Run the daily dashboard script
+      # 4️⃣ Run the Python dashboard script
       - name: Run dashboard script
         run: python daily_dashboard.py
 
-      # 5️⃣ Commit & push generated report
+      # 5️⃣ Commit & push report using PAT
       - name: Commit & push report
         env:
           GITHUB_PAT: ${{ secrets.PAT_TOKEN }}
