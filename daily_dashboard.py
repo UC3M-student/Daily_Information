@@ -5,7 +5,7 @@ from datetime import datetime
 import re
 from io import StringIO
 import os
-import feedparser  # Add this import (it's lightweight & usually pre-installed in Actions ubuntu)
+import feedparser  # pip install feedparser
 
 # =========================================================
 # COMMON HEADERS
@@ -18,50 +18,76 @@ HEADERS = {
 }
 
 # =========================================================
-# 1️⃣ OKDIARIO HEADLINES → Use RSS (reliable, no JS)
+# 1. OKDIARIO HEADLINES – Reliable RSS feed
 # =========================================================
 def scrape_okdiario_headlines(limit=8):
     try:
         feed_url = "https://okdiario.com/feed/"
         feed = feedparser.parse(feed_url)
-        headlines = [entry.title for entry in feed.entries[:limit] if hasattr(entry, 'title')]
-        return headlines if headlines else ["No headlines available (RSS fetch issue)"]
+        headlines = []
+        for entry in feed.entries[:limit]:
+            if hasattr(entry, 'title'):
+                title = entry.title.strip()
+                if title:  # skip empty
+                    headlines.append(title)
+        return headlines if headlines else ["No recent headlines available"]
     except Exception as e:
         print(f"⚠️ OKDiario RSS failed: {e}")
-        return ["Headlines unavailable"]
+        return ["Headlines unavailable at the moment"]
 
 # =========================================================
-# 2️⃣ ENERGY PRICES – Flexible parsing
+# 2. ENERGY PRICES – Flexible column detection
 # =========================================================
-def scrape_energy_prices():
+def scrape_energy_prices(top_n=10):
     url = "https://www.energyprices.eu/"
     try:
         response = requests.get(url, headers=HEADERS, timeout=12)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table")
         if not table:
-            print("⚠️ No table found on energyprices.eu")
-            return pd.DataFrame(columns=["Region", "Avg Price", "High", "Low"])
+            print("⚠️ Energy table not found")
+            return pd.DataFrame(columns=["Region", "Change %", "Avg Price", "High", "Low"])
 
         data = []
         for row in table.find_all("tr")[1:]:  # skip header
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
+            cols = [td.get_text(strip=True) for td in row.find_all("td")]
             if len(cols) < 3:
                 continue
-            region = cols[0]
-            # Sometimes % is before avg, sometimes separate
-            avg = cols[1] if len(cols) > 1 else ""
-            high = cols[2] if len(cols) > 2 else ""
-            low  = cols[3] if len(cols) > 3 else ""
-            data.append({"Region": region, "Avg Price": avg, "High": high, "Low": low})
+
+            # Clean region name (remove rank # or flags)
+            region = re.sub(r'^\d+\s*', '', cols[0]).strip()
+
+            # Detect where % change is (often column 1 or 2)
+            change = ""
+            avg_start = 1
+            if "%" in cols[1]:
+                change = cols[1]
+                avg_start = 2
+            elif len(cols) > 2 and "%" in cols[2]:
+                change = cols[2]
+                avg_start = 3
+
+            avg = cols[avg_start] if len(cols) > avg_start else ""
+            high = cols[avg_start + 1] if len(cols) > avg_start + 1 else ""
+            low = cols[avg_start + 2] if len(cols) > avg_start + 2 else ""
+
+            data.append({
+                "Region": region,
+                "Change %": change,
+                "Avg Price": avg,
+                "High": high,
+                "Low": low
+            })
+
         df = pd.DataFrame(data)
-        return df if not df.empty else pd.DataFrame(columns=["Region", "Avg Price", "High", "Low"])
+        return df.head(top_n) if not df.empty else pd.DataFrame(columns=["Region", "Change %", "Avg Price", "High", "Low"])
     except Exception as e:
         print(f"⚠️ Energy prices failed: {e}")
-        return pd.DataFrame(columns=["Region", "Avg Price", "High", "Low"])
+        return pd.DataFrame(columns=["Region", "Change %", "Avg Price", "High", "Low"])
 
 # =========================================================
-# 3️⃣ EU MARKET CAP (unchanged – works)
+# 3. EU MARKET CAP – CSV is stable
 # =========================================================
 def scrape_eu_market_cap(top_n=15):
     url = "https://companiesmarketcap.com/european-union/largest-companies-in-the-eu-by-market-cap/?download=csv"
@@ -69,11 +95,12 @@ def scrape_eu_market_cap(top_n=15):
         response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
         df = pd.read_csv(StringIO(response.text))
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        rank_col = next((c for c in df.columns if "rank" in c.lower()), df.columns[0])
-        name_col = next((c for c in df.columns if "name" in c.lower()), df.columns[1])
-        mcap_col = next((c for c in df.columns if "market cap" in c.lower() or "market" in c.lower()), df.columns[2])
-        change_col = next((c for c in df.columns if "today" in c.lower() or "change" in c.lower()), None)
+        df.columns = [str(c).strip().lower().replace(" ", "") for c in df.columns]
+
+        rank_col   = next((c for c in df.columns if "rank" in c), df.columns[0])
+        name_col   = next((c for c in df.columns if "name" in c or "company" in c), df.columns[1])
+        mcap_col   = next((c for c in df.columns if "marketcap" in c or "market" in c), df.columns[2])
+        change_col = next((c for c in df.columns if "today" in c or "change" in c or "1d" in c), None)
 
         selected = [rank_col, name_col, mcap_col]
         if change_col:
@@ -87,127 +114,172 @@ def scrape_eu_market_cap(top_n=15):
 
         def format_mcap(v):
             try:
-                v = float(str(v).replace("$","").replace(",",""))
+                v = float(str(v).replace("$", "").replace(",", "").replace("B", "").replace("T", ""))
+                if "T" in str(v): v *= 1e12
+                elif "B" in str(v): v *= 1e9
                 if v >= 1e12: return f"${v/1e12:.2f}T"
                 if v >= 1e9:  return f"${v/1e9:.2f}B"
                 return f"${v:,.0f}"
             except:
                 return str(v)
+
         clean_df["Market Cap"] = clean_df["Market Cap"].apply(format_mcap)
 
         if "Daily %" in clean_df.columns:
-            clean_df["Daily %"] = clean_df["Daily %"].apply(lambda x: f"{float(x):.2f}%" if pd.notnull(x) else "")
+            clean_df["Daily %"] = clean_df["Daily %"].apply(
+                lambda x: f"{float(str(x).replace('%','')):.2f}%" if pd.notnull(x) and str(x).strip() else ""
+            )
+
         return clean_df
     except Exception as e:
         print(f"⚠️ EU Market Cap failed: {e}")
         return pd.DataFrame(columns=["Rank", "Company", "Market Cap"])
 
 # =========================================================
-# 4️⃣ MADRID WEATHER – Switch to Open-Meteo (free JSON API, no JS, reliable)
+# 4. MADRID HOURLY FORECAST – Open-Meteo (fixed URL)
 # =========================================================
 def get_madrid_hourly_forecast(hours_to_show=12):
-    url = "https://api.open-meteo.com/v1/forecast?latitude=40.4168&longitude=-3.7038&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,weathercode&timezone=Europe%2FMadrid&forecast_days=1"
+    # Clean URL – no %2F needed, API accepts / or %2F
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        "?latitude=40.4168&longitude=-3.7038"
+        "&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation"
+        "&timezone=Europe/Madrid"
+        "&forecast_days=1"
+    )
     try:
-        resp = requests.get(url, timeout=10).json()
-        hourly = resp["hourly"]
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        hourly = data["hourly"]
         times = hourly["time"][:hours_to_show]
         temps = hourly["temperature_2m"][:hours_to_show]
         feels = hourly["apparent_temperature"][:hours_to_show]
         rain_p = hourly["precipitation_probability"][:hours_to_show]
         rain_mm = hourly["precipitation"][:hours_to_show]
 
-        data = []
+        rows = []
         for i in range(len(times)):
-            t = datetime.fromisoformat(times[i]).strftime("%H:%M")
-            cond = "Rain" if rain_mm[i] > 0.1 else "Clear/Cloudy"  # simple; can improve with weathercode
-            data.append({
-                "Time": t,
+            t_str = datetime.fromisoformat(times[i]).strftime("%H:%M")
+            cond = "Rain" if rain_mm[i] > 0.1 else "Clear/Cloudy"
+            rows.append({
+                "Time": t_str,
                 "Temp": f"{temps[i]} °C",
                 "Feels": f"{feels[i]} °C",
                 "Rain %": f"{rain_p[i]}%",
-                "Rain mm": f"{rain_mm[i]} mm",
+                "Rain mm": f"{rain_mm[i]:.1f} mm",
                 "Condition": cond
             })
-        return pd.DataFrame(data)
+        return pd.DataFrame(rows)
     except Exception as e:
-        print(f"⚠️ Weather API failed: {e}")
-        return pd.DataFrame(columns=["Time","Temp","Feels","Rain %","Rain mm","Condition"])
+        print(f"⚠️ Open-Meteo failed: {e}")
+        return pd.DataFrame(columns=["Time", "Temp", "Feels", "Rain %", "Rain mm", "Condition"])
 
 # =========================================================
-# 5️⃣ GLOBAL MARKETS – Fallback / placeholder (Trading Economics often blocked)
+# 5. GLOBAL MARKETS – Placeholder (Trading Economics unreliable)
 # =========================================================
 def scrape_global_markets():
-    # For now: placeholder. Consider switching to https://finance.yahoo.com/world-indices/ later
-    print("⚠️ Trading Economics likely blocked → using placeholder")
+    # You can later replace with Yahoo Finance or similar
     data = [
-        {"Index": "S&P 500", "Weekly": "+1.2%", "Monthly": "+3.5%", "YTD": "+8.1%", "YoY": "+18%"},
-        {"Index": "Euro Stoxx 50", "Weekly": "-0.4%", "Monthly": "+2.1%", "YTD": "+4.8%", "YoY": "+12%"},
+        {"Index": "S&P 500",      "Weekly": "+1.4%", "Monthly": "+4.2%", "YTD": "+9.8%", "YoY": "+19%"},
+        {"Index": "Euro Stoxx 50","Weekly": "-0.3%", "Monthly": "+2.8%", "YTD": "+5.1%", "YoY": "+13%"},
+        {"Index": "DAX",          "Weekly": "+0.9%", "Monthly": "+3.1%", "YTD": "+6.7%", "YoY": "+15%"},
     ]
     return pd.DataFrame(data)
 
 # =========================================================
-# COLOR & HTML generation (minor tweak: use index.html)
+# COLORIZE PERCENTAGES
 # =========================================================
-def color_percentages(html):
-    html = re.sub(r'>([+-]?\d+\.?\d*%)<', lambda m: f'><span style="color:{"#d62728" if m.group(1).startswith("-") else "#2ca02c"};font-weight:600;">{m.group(1)}</span><', html)
-    return html
+def color_percentages(html_str):
+    # Red for negative, Green for positive
+    html_str = re.sub(
+        r'>([+-]?\d+\.?\d*%)<',
+        lambda m: f'><span style="color:{"#d62728" if m.group(1).startswith("-") else "#2ca02c"}; font-weight:600;">{m.group(1)}</span><',
+        html_str
+    )
+    return html_str
 
+# =========================================================
+# GENERATE HTML DASHBOARD
+# =========================================================
 def generate_html_report(headlines, energy_df, market_df, stocks_df, forecast_df):
     now = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
-    energy_html = color_percentages(energy_df.to_html(index=False, classes="styled", escape=False))
-    market_html = color_percentages(market_df.to_html(index=False, classes="styled", escape=False))
-    stocks_html = color_percentages(stocks_df.to_html(index=False, classes="styled", escape=False))
-    forecast_html = forecast_df.to_html(index=False, classes="styled", escape=False)
+    
+    energy_html   = color_percentages(energy_df.to_html(index=False, classes="styled", escape=False))   if not energy_df.empty   else "<p>Data currently unavailable</p>"
+    market_html   = color_percentages(market_df.to_html(index=False, classes="styled", escape=False))   if not market_df.empty   else "<p>Data currently unavailable</p>"
+    stocks_html   = color_percentages(stocks_df.to_html(index=False, classes="styled", escape=False))   if not stocks_df.empty   else "<p>Data currently unavailable</p>"
+    forecast_html = color_percentages(forecast_df.to_html(index=False, classes="styled", escape=False)) if not forecast_df.empty else "<p>Data currently unavailable</p>"
 
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Executive Dashboard</title>
-        <style>
-            body {{ font-family: 'Segoe UI', sans-serif; background: #f4f6f9; margin:0; padding:0; }}
-            header {{ background: linear-gradient(90deg,#1f4e79,#163a5f); color:white; padding:2.5rem; text-align:center; }}
-            .container {{ max-width:1200px; margin:0 auto; padding:2rem; }}
-            .card {{ background:white; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,0.1); padding:1.8rem; margin-bottom:2.5rem; }}
-            h2 {{ color:#163a5f; margin-top:0; }}
-            table.styled {{ width:100%; border-collapse:collapse; font-size:0.95rem; }}
-            table.styled th {{ background:#163a5f; color:white; padding:0.9rem; text-align:left; }}
-            table.styled td {{ padding:0.8rem; border-bottom:1px solid #eee; }}
-            table.styled tr:nth-child(even) {{ background:#f8fbff; }}
-            ul {{ padding-left:1.4rem; line-height:1.6; }}
-        </style>
-    </head>
-    <body>
-    <header>
-        <h1>📊 Executive Intelligence Dashboard</h1>
-        <p>Generated: {now}</p>
-    </header>
-    <div class="container">
-        <div class="card">
-            <h2>📰 Top Headlines</h2>
-            <ul>{''.join(f"<li>{h}</li>" for h in headlines)}</ul>
-        </div>
-        <div class="card"><h2>⚡ European Energy Prices</h2>{energy_html or "<p>Data unavailable</p>"}</div>
-        <div class="card"><h2>🏢 Largest EU Companies by Market Cap</h2>{market_html or "<p>Data unavailable</p>"}</div>
-        <div class="card"><h2>📈 Global Stock Indices (Placeholder)</h2>{stocks_html or "<p>Data unavailable</p>"}</div>
-        <div class="card"><h2>🌤 Madrid Hourly Forecast</h2>{forecast_html or "<p>Data unavailable</p>"}</div>
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executive Intelligence Dashboard</title>
+    <style>
+        body {{ font-family: 'Segoe UI', sans-serif; background: #f4f6f9; margin:0; padding:0; color:#333; }}
+        header {{ background: linear-gradient(90deg, #1f4e79, #163a5f); color:white; padding:2.5rem; text-align:center; }}
+        .container {{ max-width:1200px; margin:0 auto; padding:2rem; }}
+        .card {{ background:white; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,0.1); padding:1.8rem; margin-bottom:2.5rem; }}
+        h1, h2 {{ margin:0.5rem 0; }}
+        h2 {{ color:#163a5f; }}
+        table.styled {{ width:100%; border-collapse:collapse; font-size:0.95rem; }}
+        table.styled th {{ background:#163a5f; color:white; padding:0.9rem; text-align:left; }}
+        table.styled td {{ padding:0.8rem; border-bottom:1px solid #eee; }}
+        table.styled tr:nth-child(even) {{ background:#f8fbff; }}
+        ul {{ padding-left:1.4rem; line-height:1.6; list-style-type:disc; }}
+    </style>
+</head>
+<body>
+<header>
+    <h1>📊 Executive Intelligence Dashboard</h1>
+    <p>Generated: {now}</p>
+</header>
+<div class="container">
+    <div class="card">
+        <h2>📰 Top Headlines (OKDiario)</h2>
+        <ul>{''.join(f"<li>{h}</li>" for h in headlines)}</ul>
     </div>
-    </body>
-    </html>
-    """
+    
+    <div class="card">
+        <h2>⚡ European Energy Prices</h2>
+        {energy_html}
+    </div>
+    
+    <div class="card">
+        <h2>🏢 Largest EU Companies by Market Cap</h2>
+        {market_html}
+    </div>
+    
+    <div class="card">
+        <h2>📈 Global Stock Indices (Placeholder)</h2>
+        {stocks_html}
+    </div>
+    
+    <div class="card">
+        <h2>🌤 Madrid Hourly Forecast (Next 12h)</h2>
+        {forecast_html}
+    </div>
+</div>
+</body>
+</html>"""
+
     os.makedirs("docs", exist_ok=True)
-    with open("docs/index.html", "w", encoding="utf-8") as f:  # ← changed to index.html
+    output_path = "docs/index.html"
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print("✅ Dashboard generated: docs/index.html")
+    print(f"✅ Dashboard generated successfully: {output_path}")
 
 # =========================================================
-# MAIN
+# MAIN EXECUTION
 # =========================================================
 if __name__ == "__main__":
-    headlines   = scrape_okdiario_headlines()
-    energy_df   = scrape_energy_prices()
-    market_df   = scrape_eu_market_cap()
-    stocks_df   = scrape_global_markets()          # changed name & fallback
-    forecast_df = get_madrid_hourly_forecast()
+    print("Starting daily dashboard generation...")
+    headlines   = scrape_okdiario_headlines(limit=8)
+    energy_df   = scrape_energy_prices(top_n=10)
+    market_df   = scrape_eu_market_cap(top_n=15)
+    stocks_df   = scrape_global_markets()
+    forecast_df = get_madrid_hourly_forecast(hours_to_show=12)
+
     generate_html_report(headlines, energy_df, market_df, stocks_df, forecast_df)
+    print("Generation complete.")
