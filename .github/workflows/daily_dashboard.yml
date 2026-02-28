@@ -3,7 +3,7 @@ name: Daily Dashboard
 on:
   schedule:
     - cron: '0 8 * * *'  # Every day at 08:00 UTC
-  workflow_dispatch:      # Allows manual triggering
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,7 +14,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Python
+      # 2️⃣ Set up Python 3.11
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -26,15 +26,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 pandas
 
-      # 4️⃣ Run dashboard script
+      # 4️⃣ Run the daily dashboard script
       - name: Run dashboard script
-        run: |
-          python daily_dashboard.py
+        run: python daily_dashboard.py
 
-      # 5️⃣ Commit & push the HTML report
+      # 5️⃣ Commit & push generated report
       - name: Commit & push report
         env:
-          GITHUB_PAT: ${{ secrets.PAT_TOKEN }}  # Your Personal Access Token secret
+          GITHUB_PAT: ${{ secrets.PAT_TOKEN }}
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
