@@ -3,14 +3,14 @@ name: Daily Dashboard
 on:
   schedule:
     - cron: '0 8 * * *'  # Every day at 08:00 UTC
-  workflow_dispatch:      # Allow manual triggering
+  workflow_dispatch:      # Allows manual triggering
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout the repository
       - name: Checkout repo
         uses: actions/checkout@v3
 
@@ -33,9 +33,11 @@ jobs:
 
       # 5️⃣ Commit & push the HTML report
       - name: Commit & push report
+        env:
+          GITHUB_PAT: ${{ secrets.PAT_TOKEN }}  # Your Personal Access Token secret
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add docs/daily_report.html
           git commit -m "Update daily dashboard [skip ci]" || echo "No changes to commit"
-          git push https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
+          git push https://x-access-token:${GITHUB_PAT}@github.com/${{ github.repository }}.git HEAD:main
