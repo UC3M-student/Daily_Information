@@ -63,10 +63,7 @@ def scrape_eu_market_cap(top_n=20):
     response = requests.get(url, headers=HEADERS, timeout=15)
     df = pd.read_csv(StringIO(response.text))
 
-    # Clean column names
     df.columns = [str(c).strip().lower() for c in df.columns]
-
-    # Detect columns by name
     rank_col = next((c for c in df.columns if "rank" in c), df.columns[0])
     name_col = next((c for c in df.columns if "name" in c), df.columns[1])
     mcap_col = next((c for c in df.columns if "market" in c), df.columns[2])
@@ -77,13 +74,11 @@ def scrape_eu_market_cap(top_n=20):
         selected_cols.append(change_col)
 
     clean_df = df[selected_cols].head(top_n)
-
     col_names = ["Rank", "Company", "Market Cap"]
     if change_col:
         col_names.append("Daily %")
     clean_df.columns = col_names
 
-    # Format Market Cap numbers
     def format_mcap(value):
         try:
             value = float(value)
@@ -95,12 +90,8 @@ def scrape_eu_market_cap(top_n=20):
 
     clean_df["Market Cap"] = clean_df["Market Cap"].apply(format_mcap)
 
-    # Format growth %
     if "Daily %" in clean_df.columns:
-        clean_df["Daily %"] = clean_df["Daily %"].apply(
-            lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
-        )
-
+        clean_df["Daily %"] = clean_df["Daily %"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
     return clean_df
 
 # =========================================================
@@ -151,17 +142,20 @@ def get_madrid_hourly_forecast(hours_to_show=12):
     return pd.DataFrame(data)
 
 # =========================================================
-# 5️⃣ TRADING ECONOMICS (CSV version)
+# 5️⃣ TRADING ECONOMICS (server-safe)
 # =========================================================
 def scrape_trading_economics():
-    url = "https://tradingeconomics.com/stocks?download=csv"
-    response = requests.get(url, headers=HEADERS, timeout=15)
-    df = pd.read_csv(StringIO(response.text))
-
-    columns_needed = ["Name","Weekly","Monthly","YTD","YoY"]
-    df_clean = df[columns_needed]
-    df_clean.rename(columns={"Name":"Index"}, inplace=True)
-    return df_clean
+    try:
+        url = "https://tradingeconomics.com/stocks?download=csv"
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        df = pd.read_csv(StringIO(response.text))
+        columns_needed = ["Name","Weekly","Monthly","YTD","YoY"]
+        df_clean = df[columns_needed]
+        df_clean.rename(columns={"Name":"Index"}, inplace=True)
+        return df_clean
+    except Exception as e:
+        print(f"⚠️ Skipping Trading Economics: {e}")
+        return pd.DataFrame(columns=["Index","Weekly","Monthly","YTD","YoY"])
 
 # =========================================================
 # 6️⃣ COLOR PERCENTAGES
