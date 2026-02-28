@@ -321,7 +321,10 @@ def generate_html_report(headlines, energy_df, market_df, stocks_df, forecast_df
     </html>
     """
 
-    with open("daily_report.html", "w", encoding="utf-8") as f:
+    import os
+
+    os.makedirs("docs", exist_ok=True)
+    with open("docs/daily_report.html", "w", encoding="utf-8") as f:
         f.write(html)
 
     print("✅ Dashboard generated successfully: daily_report.html")
@@ -345,4 +348,5 @@ if __name__ == "__main__":
         market_df,
         stocks_df,
         forecast_df
+
     )
