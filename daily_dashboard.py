@@ -6,15 +6,24 @@ import re
 from io import StringIO
 
 
+# Common headers for all requests
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Referer": "https://www.google.com/"
+}
+
+
 # =========================================================
 # 1️⃣ OKDIARIO HEADLINES
 # =========================================================
 
 def scrape_okdiario_headlines(limit=5):
     url = "https://okdiario.com"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    response = requests.get(url, headers=headers, timeout=10)
+    response = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(response.text, "html.parser")
 
     headlines = [
@@ -31,25 +40,26 @@ def scrape_okdiario_headlines(limit=5):
 
 def scrape_energy_prices():
     url = "https://www.energyprices.eu/"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    response = requests.get(url, headers=headers, timeout=10)
+    response = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(response.text, "html.parser")
     table = soup.find("table")
 
     data = []
-    for row in table.find_all("tr")[1:]:
-        cols = row.find_all("td")
-        if len(cols) < 4:
-            continue
+    if table:
+        for row in table.find_all("tr")[1:]:
+            cols = row.find_all("td")
+            if len(cols) < 4:
+                continue
 
-        data.append({
-            "Region": cols[0].get_text(strip=True),
-            "Change %": cols[1].get_text(strip=True),
-            "Avg Price": cols[2].get_text(strip=True),
-            "High": cols[3].get_text(strip=True),
-            "Low": cols[4].get_text(strip=True) if len(cols) > 4 else ""
-        })
+            data.append({
+                "Region": cols[0].get_text(strip=True),
+                "Change %": cols[1].get_text(strip=True),
+                "Avg Price": cols[2].get_text(strip=True),
+                "High": cols[3].get_text(strip=True),
+                "Low": cols[4].get_text(strip=True) if len(cols) > 4 else ""
+            })
+    else:
+        print("Warning: Energy prices table not found.")
 
     return pd.DataFrame(data)
 
@@ -73,9 +83,7 @@ def format_market_cap(value):
 
 def scrape_eu_market_cap(top_n=20):
     url = "https://companiesmarketcap.com/european-union/largest-companies-in-the-eu-by-market-cap/?download=csv"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    response = requests.get(url, headers=headers, timeout=15)
+    response = requests.get(url, headers=HEADERS, timeout=15)
     df = pd.read_csv(StringIO(response.text))
 
     # Clean column names
@@ -105,7 +113,7 @@ def scrape_eu_market_cap(top_n=20):
     clean_df.columns = col_names
 
     # Format market cap numbers
-    def format_market_cap(value):
+    def format_market_cap_inner(value):
         try:
             value = float(value)
             if value >= 1_000_000_000_000: return f"${value/1_000_000_000_000:.2f}T"
@@ -114,7 +122,7 @@ def scrape_eu_market_cap(top_n=20):
         except:
             return value
 
-    clean_df["Market Cap"] = clean_df["Market Cap"].apply(format_market_cap)
+    clean_df["Market Cap"] = clean_df["Market Cap"].apply(format_market_cap_inner)
 
     # Format growth %
     if "Daily %" in clean_df.columns:
@@ -124,24 +132,24 @@ def scrape_eu_market_cap(top_n=20):
 
     return clean_df
 
+
 # =========================================================
 # 4️⃣ WEATHER — YOUR EXACT DATA STRUCTURE (ADAPTED)
 # =========================================================
 
 def get_madrid_hourly_forecast(hours_to_show=12):
-
     url = "https://www.timeanddate.com/weather/spain/madrid/hourly?unit=metric"
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    response = requests.get(url, headers=headers, timeout=10)
+    response = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(response.text, "html.parser")
     table = soup.find("table", id="wt-hbh")
 
-    rows = table.select("tbody tr")[:hours_to_show]
-
     data = []
+
+    if not table:
+        print("Warning: Weather forecast table not found.")
+        return pd.DataFrame(data)
+
+    rows = table.select("tbody tr")[:hours_to_show]
 
     for row in rows:
         cells = row.find_all(["th", "td"])
@@ -185,13 +193,16 @@ def get_madrid_hourly_forecast(hours_to_show=12):
 # =========================================================
 
 def scrape_trading_economics():
-
     url = "https://tradingeconomics.com/stocks"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    response = requests.get(url, headers=headers, timeout=10)
+    response = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(response.content, "html.parser")
     table = soup.find("table", {"class": "table-hover"})
+
+    if not table:
+        # Save HTML for debugging
+        with open("debug_trading.html", "w", encoding="utf-8") as f:
+            f.write(response.text)
+        raise RuntimeError("Trading Economics table not found. Saved page as debug_trading.html")
 
     data = []
     for row in table.find_all("tr"):
@@ -327,7 +338,7 @@ def generate_html_report(headlines, energy_df, market_df, stocks_df, forecast_df
     with open("docs/daily_report.html", "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("✅ Dashboard generated successfully: daily_report.html")
+    print("✅ Dashboard generated successfully: docs/daily_report.html")
 
 
 # =========================================================
@@ -348,6 +359,4 @@ if __name__ == "__main__":
         market_df,
         stocks_df,
         forecast_df
-
     )
-
